@@ -12,7 +12,7 @@ BIN=$DIR/sing-box
 SCRIPT=$DIR/install.sh
 UNIT=$DIR/hysteria2-singbox.service
 SERVICE=hysteria2-singbox.service
-SNI=hy2.invalid
+DEFAULT_SNI=itunes.apple.com
 INSTALL_STAGE=
 
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
@@ -167,10 +167,32 @@ prompt_password() {
   done
 }
 
+valid_sni() {
+  local name=$1 label
+  local labels=()
+  [[ ${#name} -le 64 && $name == *.* && $name != .* && $name != *. &&
+     $name != *..* && $name =~ ^[A-Za-z0-9.-]+$ ]] || return 1
+  if valid_ip "$name"; then return 1; fi
+  IFS=. read -r -a labels <<<"$name"
+  for label in "${labels[@]}"; do
+    [[ ${#label} -le 63 && $label =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+  done
+}
+
+prompt_sni() {
+  local sni
+  while true; do
+    read -r -p "证书 SNI [$DEFAULT_SNI]：" sni </dev/tty || die '需要交互式终端输入 SNI。'
+    sni=${sni:-$DEFAULT_SNI}
+    if valid_sni "$sni"; then printf '%s\n' "$sni"; return; fi
+    note '请输入有效的域名（最长 64 个字符）。' >&2
+  done
+}
+
 show() {
   [[ -f $CONFIG && -f $CERT ]] || die "找不到已安装的配置或证书：$DIR"
   ensure_tools openssl
-  local ip=${1:-} config port password fingerprint pubkey_pin host uri_pin
+  local ip=${1:-} config port password fingerprint pubkey_pin host uri_pin san sni
   if [[ -z $ip ]]; then ensure_tools curl; fi
   ip=$(current_ip "$ip")
   config=$(<"$CONFIG")
@@ -180,6 +202,9 @@ show() {
   port=${BASH_REMATCH[1]}
   [[ $config =~ $password_pattern ]] || die '无法从服务端配置读取密码。'
   password=${BASH_REMATCH[1]}
+  san=$(openssl x509 -in "$CERT" -noout -ext subjectAltName) || die '无法读取证书名称。'
+  [[ $san =~ DNS:([A-Za-z0-9.-]+) ]] || die '证书缺少 DNS 主题备用名称。'
+  sni=${BASH_REMATCH[1]}
   fingerprint=$(openssl x509 -in "$CERT" -noout -fingerprint -sha256)
   fingerprint=${fingerprint#*=}
   pubkey_pin=$(openssl x509 -in "$CERT" -pubkey -noout | \
@@ -192,7 +217,7 @@ show() {
 
   printf '\nv2rayN / v2rayNG 分享链接：\n'
   printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1&pinSHA256=%s#HY2\n' \
-    "$password" "$host" "$port" "$SNI" "$uri_pin"
+    "$password" "$host" "$port" "$sni" "$uri_pin"
   printf '\nMihomo 单节点 YAML：\n'
   cat <<EOF
 proxies:
@@ -201,7 +226,7 @@ proxies:
     server: "$ip"
     port: $port
     password: "$password"
-    sni: "$SNI"
+    sni: "$sni"
     fingerprint: "$fingerprint"
 EOF
   printf '\nsing-box 单节点出站 JSON（客户端 1.13+）：\n'
@@ -214,7 +239,7 @@ EOF
   "password": "$password",
   "tls": {
     "enabled": true,
-    "server_name": "$SNI",
+    "server_name": "$sni",
     "certificate_public_key_sha256": ["$pubkey_pin"]
   }
 }
@@ -302,11 +327,12 @@ install_script() {
 }
 
 install_new() {
-  local arch port ip release_info version archive digest url listen password
+  local arch port ip release_info version archive digest url listen password sni
   arch=$(architecture "$(uname -m)") || die "不支持的架构：$(uname -m)"
   ensure_tools curl openssl tar sha256sum
   port=$(prompt_port)
   password=$(prompt_password)
+  sni=$(prompt_sni)
   ip=$(current_ip)
   mkdir -p "$DIR"
   chmod 700 "$DIR"
@@ -330,12 +356,12 @@ distinguished_name = subject
 prompt = no
 x509_extensions = server_cert
 [subject]
-CN = $SNI
+CN = $sni
 [server_cert]
 basicConstraints = critical,CA:FALSE
 keyUsage = critical,digitalSignature
 extendedKeyUsage = serverAuth
-subjectAltName = DNS:$SNI
+subjectAltName = DNS:$sni
 EOF
   openssl ecparam -genkey -name prime256v1 -noout -out "$INSTALL_STAGE/server.key"
   openssl req -new -x509 -sha256 -days 3650 -key "$INSTALL_STAGE/server.key" \
