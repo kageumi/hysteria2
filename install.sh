@@ -227,6 +227,7 @@ proxies:
     port: $port
     password: "$password"
     sni: "$sni"
+    skip-cert-verify: true
     fingerprint: "$fingerprint"
 EOF
   printf '\nsing-box 单节点出站 JSON（客户端 1.13+）：\n'
@@ -240,6 +241,7 @@ EOF
   "tls": {
     "enabled": true,
     "server_name": "$sni",
+    "insecure": true,
     "certificate_public_key_sha256": ["$pubkey_pin"]
   }
 }
