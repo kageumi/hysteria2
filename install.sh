@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Install: bash install.sh
-# Show nodes after the server IP changes: bash /root/hysteria2/install.sh show [current-public-ip]
+# Run: curl -fsSL https://raw.githubusercontent.com/kageumi/hysteria2/main/install.sh | bash
 set -euo pipefail
 umask 077
 
@@ -9,9 +8,9 @@ CONFIG=$DIR/config.json
 CERT=$DIR/server.crt
 KEY=$DIR/server.key
 BIN=$DIR/sing-box
-SCRIPT=$DIR/install.sh
 UNIT=$DIR/hysteria2-singbox.service
 SERVICE=hysteria2-singbox.service
+SYSTEM_UNIT=/etc/systemd/system/$SERVICE
 DEFAULT_SNI=itunes.apple.com
 INSTALL_STAGE=
 
@@ -125,7 +124,7 @@ current_ip() {
       note "当前公网 IP：$ip" >&2
     else
       read -r -p '无法从 ip.sb 获取公网 IP，请输入当前公网 IP：' ip </dev/tty ||
-        die '无法获取公网 IP，且没有可用终端输入。可运行 show 并附上当前 IP。'
+        die '无法获取公网 IP，且没有可用终端输入。'
     fi
   fi
   valid_ip "$ip" || die "无效的 IP 地址：$ip"
@@ -189,7 +188,7 @@ prompt_sni() {
   done
 }
 
-show() {
+view_config() {
   [[ -f $CONFIG && -f $CERT ]] || die "找不到已安装的配置或证书：$DIR"
   ensure_tools openssl
   local ip=${1:-} config port password fingerprint pubkey_pin host uri_pin san sni
@@ -246,13 +245,11 @@ EOF
   }
 }
 EOF
-  printf '\nIP 变化后运行：bash %s show\n' "$SCRIPT"
 }
 
 write_unit() {
-  if [[ ( -e /etc/systemd/system/$SERVICE || -L /etc/systemd/system/$SERVICE ) &&
-        ! /etc/systemd/system/$SERVICE -ef $UNIT ]]; then
-    die "系统中已有其他 $SERVICE，未覆盖。"
+  if [[ ( -e $SYSTEM_UNIT || -L $SYSTEM_UNIT ) && ! $SYSTEM_UNIT -ef $UNIT ]]; then
+    die "系统中已有其他 ${SERVICE}，未覆盖。"
   fi
   cat >"$UNIT" <<EOF
 [Unit]
@@ -285,15 +282,15 @@ open_firewall() {
   if command -v ufw >/dev/null 2>&1; then
     status=$(LC_ALL=C ufw status 2>/dev/null) || status=
     if [[ $status == *'Status: active'* ]]; then
-      ufw allow "$port/udp" || note "警告：UFW 未能开放 UDP $port。" >&2
+      ufw allow "$port/udp" || note "警告：UFW 未能开放 UDP ${port}。" >&2
     fi
   fi
   if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
     if ! firewall-cmd --query-port="$port/udp" >/dev/null 2>&1; then
       if firewall-cmd --permanent --add-port="$port/udp" && firewall-cmd --reload; then
-        note "firewalld 已开放 UDP $port。"
+        note "firewalld 已开放 UDP ${port}。"
       else
-        note "警告：firewalld 未能开放 UDP $port。" >&2
+        note "警告：firewalld 未能开放 UDP ${port}。" >&2
       fi
     fi
   fi
@@ -323,11 +320,6 @@ release_asset() {
   printf '%s %s %s\n' "$version" "$archive" "$digest"
 }
 
-install_script() {
-  if [[ ! $0 -ef $SCRIPT ]]; then cp "$0" "$SCRIPT"; fi
-  chmod 700 "$SCRIPT"
-}
-
 install_new() {
   local arch port ip release_info version archive digest url listen password sni
   arch=$(architecture "$(uname -m)") || die "不支持的架构：$(uname -m)"
@@ -341,7 +333,7 @@ install_new() {
   INSTALL_STAGE=$(mktemp -d "$DIR/.install.XXXXXX")
   trap '[[ -z $INSTALL_STAGE ]] || rm -rf -- "$INSTALL_STAGE"' EXIT
 
-  note "下载 sing-box 最新稳定版（linux/$arch）…"
+  note "下载 sing-box 最新稳定版（linux/${arch}）…"
   release_info=$(release_asset "$arch") || die '无法确定可信的 sing-box 发布包。'
   read -r version archive digest <<<"$release_info"
   url="https://github.com/SagerNet/sing-box/releases/download/v$version/$archive"
@@ -393,39 +385,70 @@ EOF
   chmod 700 "$BIN"
   chmod 600 "$CONFIG" "$CERT" "$KEY"
   "$BIN" check -c "$CONFIG" || die 'sing-box 配置检查失败。'
-  install_script
   write_unit
+  rm -f -- "$DIR/install.sh"
   open_firewall "$port"
-  note "安装成功；服务已启动并设置开机自启。请同时检查云平台安全组是否开放 UDP $port。"
-  show "$ip"
+  note "安装成功；服务已启动并设置开机自启。请同时检查云平台安全组是否开放 UDP ${port}。"
+  view_config "$ip"
+  rm -rf -- "$INSTALL_STAGE"
+  INSTALL_STAGE=
+}
+
+install() {
+  need_systemd
+  if [[ -f $CONFIG && -f $CERT && -f $KEY && -x $BIN ]]; then
+    note '检测到已有安装，保留现有密码和证书。'
+    "$BIN" check -c "$CONFIG" || die '现有配置无效。'
+    write_unit
+    rm -f -- "$DIR/install.sh"
+    view_config
+  elif [[ -e $CONFIG || -e $CERT || -e $KEY || -e $BIN ]]; then
+    die "$DIR 中存在不完整的安装；请检查该目录后重试。"
+  else
+    install_new
+  fi
+}
+
+uninstall() {
+  if [[ ! -d $DIR && ! -e $SYSTEM_UNIT && ! -L $SYSTEM_UNIT ]]; then
+    note '未检测到安装。'
+    return
+  fi
+  if [[ -e $SYSTEM_UNIT || -L $SYSTEM_UNIT ]]; then
+    [[ -L $SYSTEM_UNIT && ( $SYSTEM_UNIT -ef $UNIT || $(readlink "$SYSTEM_UNIT") == "$UNIT" ) ]] ||
+      die "系统中已有其他 ${SERVICE}，未执行卸载。"
+  fi
+  local answer
+  read -r -p "确认卸载并删除 $DIR 中的配置、密码和证书？[y/N]：" answer </dev/tty ||
+    die '需要交互式终端确认卸载。'
+  [[ $answer == [yY] ]] || { note '已取消卸载。'; return; }
+  need_systemd
+  if [[ -e $SYSTEM_UNIT || -L $SYSTEM_UNIT ]]; then
+    systemctl disable --now "$SERVICE" || die '停止或禁用服务失败，未删除安装数据。'
+  elif systemctl is-active --quiet "$SERVICE"; then
+    die '服务仍在运行且未找到受管理的 systemd 链接，未删除安装数据。'
+  fi
+  rm -rf -- "$DIR"
+  systemctl daemon-reload
+  note '卸载完成。云平台安全组和防火墙规则请按需手动清理。'
 }
 
 main() {
   [[ $(uname -s) == Linux ]] || die '仅支持 Linux。'
   need_root
-  case ${1:-install} in
-    show)
-      [[ $# -le 2 ]] || die '用法：install.sh show [当前公网 IP]'
-      show "${2:-}"
-      ;;
-    install)
-      [[ $# -le 1 ]] || die '用法：bash install.sh'
-      [[ -f $0 ]] || die '请先将脚本保存为文件，再运行 bash install.sh。'
-      need_systemd
-      if [[ -f $CONFIG && -f $CERT && -f $KEY && -x $BIN ]]; then
-        note '检测到已有安装，保留现有密码和证书。'
-        "$BIN" check -c "$CONFIG" || die '现有配置无效。'
-        install_script
-        write_unit
-        show
-      elif [[ -e $CONFIG || -e $CERT || -e $KEY || -e $BIN ]]; then
-        die "$DIR 中存在不完整的安装；请检查该目录后重试。"
-      else
-        install_new
-      fi
-      ;;
-    *) die '用法：bash install.sh [install|show [当前公网 IP]]' ;;
-  esac
+  [[ $# -eq 0 ]] || die '直接运行脚本，从菜单选择操作。'
+  local choice
+  while true; do
+    printf '\nHysteria2 管理\n1) 安装\n2) 卸载\n3) 查看配置\n0) 退出\n'
+    read -r -p '请选择 [0-3]：' choice </dev/tty || return 0
+    case $choice in
+      1) install ;;
+      2) uninstall ;;
+      3) view_config ;;
+      0) return 0 ;;
+      *) note '请输入 0、1、2 或 3。' ;;
+    esac
+  done
 }
 
-if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
+if [[ -z ${BASH_SOURCE[0]:-} || ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
