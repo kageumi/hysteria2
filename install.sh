@@ -191,7 +191,7 @@ prompt_sni() {
 view_config() {
   [[ -f $CONFIG && -f $CERT ]] || die "找不到已安装的配置或证书：$DIR"
   ensure_tools openssl
-  local ip=${1:-} config port password fingerprint pubkey_pin host uri_pin san sni
+  local ip=${1:-} config port password host san sni
   if [[ -z $ip ]]; then ensure_tools curl; fi
   ip=$(current_ip "$ip")
   config=$(<"$CONFIG")
@@ -204,19 +204,12 @@ view_config() {
   san=$(openssl x509 -in "$CERT" -noout -ext subjectAltName) || die '无法读取证书名称。'
   [[ $san =~ DNS:([A-Za-z0-9.-]+) ]] || die '证书缺少 DNS 主题备用名称。'
   sni=${BASH_REMATCH[1]}
-  fingerprint=$(openssl x509 -in "$CERT" -noout -fingerprint -sha256)
-  fingerprint=${fingerprint#*=}
-  pubkey_pin=$(openssl x509 -in "$CERT" -pubkey -noout | \
-    openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | openssl base64 -A)
-  [[ $fingerprint =~ ^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$ && -n $pubkey_pin ]] ||
-    die '证书指纹计算失败。'
   host=$ip
   [[ $ip != *:* ]] || host="[$ip]"
-  uri_pin=${fingerprint//:/%3A}
 
   printf '\nv2rayN / v2rayNG 分享链接：\n'
-  printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1&pinSHA256=%s#HY2\n' \
-    "$password" "$host" "$port" "$sni" "$uri_pin"
+  printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1#HY2\n' \
+    "$password" "$host" "$port" "$sni"
   printf '\nMihomo 单节点 YAML：\n'
   cat <<EOF
 proxies:
@@ -227,9 +220,8 @@ proxies:
     password: "$password"
     sni: "$sni"
     skip-cert-verify: true
-    fingerprint: "$fingerprint"
 EOF
-  printf '\nsing-box 单节点出站 JSON（客户端 1.13+）：\n'
+  printf '\nsing-box 单节点出站 JSON：\n'
   cat <<EOF
 {
   "type": "hysteria2",
@@ -240,8 +232,7 @@ EOF
   "tls": {
     "enabled": true,
     "server_name": "$sni",
-    "insecure": true,
-    "certificate_public_key_sha256": ["$pubkey_pin"]
+    "insecure": true
   }
 }
 EOF
