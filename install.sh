@@ -145,6 +145,28 @@ prompt_port() {
   done
 }
 
+valid_password() {
+  [[ ${#1} -ge 8 && ${#1} -le 128 && $1 =~ ^[A-Za-z0-9._~-]+$ ]]
+}
+
+prompt_password() {
+  local password confirm
+  while true; do
+    read -r -s -p '连接密码（留空随机生成；自定义需 8–128 位字母、数字或 -._~）：' password </dev/tty ||
+      die '需要交互式终端输入密码。'
+    printf '\n' >/dev/tty
+    if [[ -z $password ]]; then openssl rand -hex 24; return; fi
+    if ! valid_password "$password"; then
+      note '密码格式无效，请重新输入。' >&2
+      continue
+    fi
+    read -r -s -p '再次输入密码：' confirm </dev/tty || die '需要确认密码。'
+    printf '\n' >/dev/tty
+    if [[ $password == "$confirm" ]]; then printf '%s\n' "$password"; return; fi
+    note '两次输入不一致，请重新输入。' >&2
+  done
+}
+
 show() {
   [[ -f $CONFIG && -f $CERT ]] || die "找不到已安装的配置或证书：$DIR"
   ensure_tools openssl
@@ -153,7 +175,7 @@ show() {
   ip=$(current_ip "$ip")
   config=$(<"$CONFIG")
   local port_pattern='"listen_port"[[:space:]]*:[[:space:]]*([0-9]+)'
-  local password_pattern='"password"[[:space:]]*:[[:space:]]*"([0-9a-f]{48})"'
+  local password_pattern='"password"[[:space:]]*:[[:space:]]*"([A-Za-z0-9._~-]{8,128})"'
   [[ $config =~ $port_pattern ]] || die '无法从服务端配置读取端口。'
   port=${BASH_REMATCH[1]}
   [[ $config =~ $password_pattern ]] || die '无法从服务端配置读取密码。'
@@ -284,6 +306,7 @@ install_new() {
   arch=$(architecture "$(uname -m)") || die "不支持的架构：$(uname -m)"
   ensure_tools curl openssl tar sha256sum
   port=$(prompt_port)
+  password=$(prompt_password)
   ip=$(current_ip)
   mkdir -p "$DIR"
   chmod 700 "$DIR"
@@ -317,7 +340,6 @@ EOF
   openssl ecparam -genkey -name prime256v1 -noout -out "$INSTALL_STAGE/server.key"
   openssl req -new -x509 -sha256 -days 3650 -key "$INSTALL_STAGE/server.key" \
     -out "$INSTALL_STAGE/server.crt" -config "$INSTALL_STAGE/openssl.cnf" -extensions server_cert
-  password=$(openssl rand -hex 24)
   if [[ -s /proc/net/if_inet6 ]]; then listen='::'; else listen='0.0.0.0'; fi
   cat >"$INSTALL_STAGE/config.json" <<EOF
 {

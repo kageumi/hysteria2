@@ -11,7 +11,7 @@ curl -fL https://raw.githubusercontent.com/kageumi/hysteria2/main/install.sh -o 
 bash install.sh
 ```
 
-首次安装时输入 UDP 端口，直接回车使用 `443`。脚本会自动生成密码和自签证书，下载并校验 sing-box 官方最新稳定版，检查配置，然后启动服务。安装完成后，终端会显示以下三种**单节点**信息：
+首次安装时输入 UDP 端口，直接回车使用 `443`。密码可留空以随机生成，也可输入 8–128 位由字母、数字、`-._~` 组成的自定义密码。脚本会生成自签证书，下载并校验 sing-box 官方最新稳定版，检查配置，然后启动服务。安装完成后，终端会显示以下三种**单节点**信息：
 
 - v2rayN／v2rayNG：`hysteria2://` 分享链接
 - Mihomo：`proxies` YAML 片段
@@ -34,7 +34,7 @@ bash /root/hysteria2/install.sh show 203.0.113.7
 bash /root/hysteria2/install.sh show 2001:db8::7
 ```
 
-随后更新客户端中已导入的节点地址。重新运行安装命令会保留原有密码、证书和 sing-box 程序，并显示现有节点，不会重新安装或升级。
+随后更新客户端中已导入的节点地址。自定义密码仅在首次安装时输入；重新运行安装命令会保留原有密码、证书和 sing-box 程序，并显示现有节点，不会重新安装或升级。
 
 ## 环境与依赖
 
@@ -43,7 +43,11 @@ bash /root/hysteria2/install.sh show 2001:db8::7
 - 使用 Bash、curl、OpenSSL、tar 和 `sha256sum`，不需要 Python。缺少工具时，脚本尝试通过 apt、dnf、yum 或 pacman 安装。
 - 若 UFW 或 firewalld 正在运行，脚本会尝试放行所选 UDP 端口。云平台安全组仍需允许该端口的 UDP 入站流量。
 
-证书使用固定名称 `hy2.invalid`，客户端节点包含证书指纹或公钥 SHA-256 钉扎值。请妥善保管终端输出的节点信息，其中包含连接密码。
+## 自签证书与 SNI
+
+SNI 是客户端在 TLS 握手中发送的服务器名称，不是证书中的独立字段。脚本生成的自签证书将固定名称 `hy2.invalid` 写入主题备用名称（SAN），输出的客户端节点也使用 `hy2.invalid` 作为 SNI。客户端仍通过当前公网 IP 连接；这个名称不需要解析到服务器 IP，因此换 IP 无需重签证书。
+
+由于证书是自签的，客户端节点使用证书指纹或公钥 SHA-256 钉扎来识别服务端。不要只关闭证书校验而不使用钉扎。请妥善保管终端输出的节点信息，其中包含连接密码。
 
 ## 服务管理
 
